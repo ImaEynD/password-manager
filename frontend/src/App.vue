@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { login, register, getPasswords, addPassword, updatePassword, deletePassword, type PasswordEntry } from './services/api'
-
+import { login, register, unlockVault, getPasswords, addPassword, updatePassword, deletePassword, type PasswordEntry } from './services/api'
 // === State ===
 const isAuthenticated = ref(false)
 const username = ref('')
@@ -21,7 +20,7 @@ const showRegConfirmPassword = ref(false)
 const regError = ref('')
 const regSuccess = ref(false)
 
-// 🔐 Ключ хранилища (хранится ТОЛЬКО в памяти, очищается при logout)
+// Ключ хранилища (хранится ТОЛЬКО в памяти, очищается при logout)
 const vaultKey = ref('')
 
 // Хранилище
@@ -71,7 +70,11 @@ const handleLogin = async () => {
   try {
     const { data } = await login(username.value, password.value)
     jwtToken.value = data.token
-    vaultKey.value = password.value // 🔐 Сохраняем в памяти для деривации
+    vaultKey.value = password.value
+    
+    // 🔐 РАЗБЛОКИРУЕМ ХРАНИЛИЩЕ
+    await unlockVault(data.token, password.value)
+    
     isAuthenticated.value = true
     await loadPasswords()
   } catch (err: any) {
@@ -103,7 +106,11 @@ const handleRegister = async () => {
   try {
     const { data } = await register(regUsername.value, regPassword.value, regPassword.value)
     jwtToken.value = data.token
-    vaultKey.value = regPassword.value // 🔐 Сохраняем в памяти
+    vaultKey.value = regPassword.value
+    
+    // 🔐 РАЗБЛОКИРУЕМ ХРАНИЛИЩЕ
+    await unlockVault(data.token, regPassword.value)
+    
     regSuccess.value = true
     setTimeout(() => { resetRegistration(); isRegistering.value = false }, 1500)
   } catch (err: any) {
@@ -137,9 +144,9 @@ const handleLogout = () => {
 
 // === Загрузка паролей ===
 const loadPasswords = async () => {
-  if (!jwtToken.value || !vaultKey.value) return
+  if (!jwtToken.value) return
   try {
-    const { data } = await getPasswords(jwtToken.value, vaultKey.value)
+    const { data } = await getPasswords(jwtToken.value)
     entries.value = data
   } catch (err) {
     console.error('Failed to load passwords:', err)
@@ -175,14 +182,13 @@ const closeModal = () => { showModal.value = false; showFormPassword.value = fal
 
 const saveEntry = async () => {
   if (!formData.value.service || !formData.value.login || !formData.value.password) return
-  if (!vaultKey.value) { alert('Хранилище заблокировано. Перезайдите в аккаунт.'); return }
   
   isLoading.value = true
   try {
     if (modalMode.value === 'add') {
-      await addPassword(jwtToken.value, vaultKey.value, formData.value)
+      await addPassword(jwtToken.value, formData.value)
     } else if (editingService.value) {
-      await updatePassword(jwtToken.value, vaultKey.value, editingService.value, formData.value)
+      await updatePassword(jwtToken.value, editingService.value, formData.value)
     }
     await loadPasswords()
     closeModal()
@@ -194,10 +200,9 @@ const saveEntry = async () => {
 
 const deleteEntry = async (service: string) => {
   if (!confirm(`Удалить запись для ${service}?`)) return
-  if (!vaultKey.value) return
   
   try {
-    await deletePassword(jwtToken.value, vaultKey.value, service)
+    await deletePassword(jwtToken.value, service)
     await loadPasswords()
   } catch (err) {
     console.error('Delete failed:', err)

@@ -26,7 +26,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import com.example.passwordmanager.model.PasswordEntity;
-import com.example.passwordmanager.repository.JsonPasswordRepository;
+import com.example.passwordmanager.model.User;
+import com.example.passwordmanager.repository.PasswordRepository;
 
 import jakarta.annotation.PreDestroy;
 
@@ -42,10 +43,8 @@ public final class PasswordService {
 
     private static final Logger log = LoggerFactory.getLogger(PasswordService.class);
 
-    private final JsonPasswordRepository passwordRepository;
-
+    private final PasswordRepository passwordRepository;
     private final Map<String, CachedKey> vaultKeys = new ConcurrentHashMap<>();
-
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
     private static final class CachedKey {
@@ -62,37 +61,17 @@ public final class PasswordService {
         private long getLastAccess() { return lastAccess; }
     }
 
-    public PasswordService(JsonPasswordRepository passwordRepository) {
+    public PasswordService(PasswordRepository passwordRepository) {
         this.passwordRepository = Objects.requireNonNull(passwordRepository, "Repository cannot be null");
         scheduler.scheduleAtFixedRate(this::cleanupExpiredKeys, 1, 1, TimeUnit.MINUTES);
         log.info("PasswordService initialized: session timeout = {} min, PBKDF2 iterations = {}",
                 SESSION_TIMEOUT_MINUTES, PBKDF2_ITERATIONS);
     }
 
-    // =================================================================
-    // ======= ПУБЛИЧНЫЕ МЕТОДЫ (интерфейс для контроллера) ============
-    // =================================================================
-
-    public void unlock(String masterKey) {
-        validateMasterKey(masterKey);
-        String sessionKey = hashMasterKey(masterKey);
-        vaultKeys.compute(sessionKey, (k, cached) -> {
-            if (cached != null) { cached.refresh(); return cached; }
-            return new CachedKey(deriveKeyLegacy(masterKey));
-        });
-        log.debug("Vault unlocked (legacy mode) for session: {}", truncateHash(sessionKey));
-    }
-
-    /**
-     * @param jwt JWT-токен аутентифицированного пользователя
-     * @param masterKey мастер-ключ, введённый пользователем
-     * @param userSalt соль пользователя (из БД/репозитория)
-     */
     public void unlockForUser(String jwt, String masterKey, String userSalt) {
         if (jwt == null || jwt.isBlank()) throw new IllegalArgumentException("JWT required");
         validateMasterKey(masterKey);
         if (userSalt == null || userSalt.isBlank()) throw new IllegalArgumentException("User salt required");
-
 
         vaultKeys.compute(jwt, (token, cached) -> {
             if (cached != null) { cached.refresh(); return cached; }
@@ -103,11 +82,10 @@ public final class PasswordService {
         });
     }
 
-
-    public List<Map<String, String>> getPasswords(String sessionKey) throws Exception {
+    public List<Map<String, Object>> getPasswords(String sessionKey, User user) throws Exception {
         SecretKey key = getVaultKey(sessionKey);
-        List<PasswordEntity> entities = passwordRepository.findAll();
-        List<Map<String, String>> result = new ArrayList<>(entities.size());
+        List<PasswordEntity> entities = passwordRepository.findByUser(user);
+        List<Map<String, Object>> result = new ArrayList<>(entities.size());
 
         for (PasswordEntity e : entities) {
             result.add(Map.of(
@@ -116,14 +94,13 @@ public final class PasswordService {
                     "password", decrypt(e.getEncryptedPassword(), key)
             ));
         }
-        log.debug("Returned {} password entries for session: {}", result.size(), truncateHash(sessionKey));
+        log.debug("Returned {} password entries for user: {}", result.size(), user.getUsername());
         return result;
     }
 
-
-    public Map<String, String> getDecryptedEntry(String sessionKey, String service) throws Exception {
+    public Map<String, Object> getDecryptedEntry(String sessionKey, User user, String service) throws Exception {
         SecretKey key = getVaultKey(sessionKey);
-        PasswordEntity entity = passwordRepository.findByService(service)
+        PasswordEntity entity = passwordRepository.findByUserAndService(user, service)
                 .orElseThrow(() -> {
                     log.warn("Entry not found for service: {}", service);
                     return new IllegalArgumentException("Запись не найдена");
@@ -136,72 +113,57 @@ public final class PasswordService {
         );
     }
 
-
-    public void addPassword(String sessionKey, String service, String login, String password) throws Exception {
+    public void addPassword(String sessionKey, User user, String service, String login, String password) throws Exception {
         validateInput(service, login, password);
         SecretKey key = getVaultKey(sessionKey);
 
-        if (passwordRepository.existsByService(service)) {
-            log.warn("Duplicate add attempt for service: {}", service);
+        if (passwordRepository.existsByUserAndService(user, service)) {
+            log.warn("Duplicate add attempt for service: {} by user: {}", service, user.getUsername());
             throw new IllegalArgumentException("Запись для этого сервиса уже существует");
         }
 
         PasswordEntity entity = new PasswordEntity(
+                user,
                 service,
                 encrypt(login, key),
                 encrypt(password, key)
         );
         passwordRepository.save(entity);
-        log.info("Added password entry for service: {} (session: {})", service, truncateHash(sessionKey));
+        log.info("Added password entry for service: {} by user: {}", service, user.getUsername());
     }
 
-
-    /**
-     * @param sessionKey JWT или хэш мастер-ключа
-     * @param originalService оригинальное название сервиса (из пути URL)
-     * @param newService новое название сервиса (из тела запроса)
-     */
-    public void updatePassword(String sessionKey, String originalService, String newService, String login, String password) throws Exception {
+    public void updatePassword(String sessionKey, User user, String originalService, String newService, String login, String password) throws Exception {
         validateInput(newService, login, password);
         SecretKey key = getVaultKey(sessionKey);
 
-        if (!originalService.equals(newService) && passwordRepository.existsByService(newService)) {
+        if (!originalService.equals(newService) && passwordRepository.existsByUserAndService(user, newService)) {
             log.warn("Conflict: cannot rename {} to {} (already exists)", originalService, newService);
             throw new IllegalArgumentException("Запись с таким названием сервиса уже существует");
         }
 
-        PasswordEntity updatedEntity = new PasswordEntity(
-                newService,
-                encrypt(login, key),
-                encrypt(password, key)
-        );
-        
-        passwordRepository.updateByOriginalService(originalService, updatedEntity);
-        
-        log.info("Updated password entry: {} → {}", originalService, newService);
+        PasswordEntity entity = passwordRepository.findByUserAndService(user, originalService)
+                .orElseThrow(() -> new IllegalArgumentException("Запись не найдена: " + originalService));
+
+        entity.setService(newService);
+        entity.setEncryptedLogin(encrypt(login, key));
+        entity.setEncryptedPassword(encrypt(password, key));
+
+        passwordRepository.save(entity);
+        log.info("Updated password entry: {} → {} for user: {}", originalService, newService, user.getUsername());
     }
 
-
-    public void deletePassword(String sessionKey, String service) {
+    public void deletePassword(String sessionKey, User user, String service) {
         if (service == null || service.isBlank()) {
             throw new IllegalArgumentException("Service name cannot be empty");
         }
-        if (!passwordRepository.existsByService(service)) {
-            log.warn("Delete failed: entry not found for service: {}", service);
+        if (!passwordRepository.existsByUserAndService(user, service)) {
+            log.warn("Delete failed: entry not found for service: {} by user: {}", service, user.getUsername());
             throw new IllegalArgumentException("Запись не найдена");
         }
-        passwordRepository.deleteByService(service);
-        log.info("Deleted password entry for service: {} (session: {})", service, truncateHash(sessionKey));
+        passwordRepository.deleteByUserAndService(user, service);
+        log.info("Deleted password entry for service: {} by user: {}", service, user.getUsername());
     }
 
-    // =================================================================
-    // ================= ПРИВАТНЫЕ МЕТОДЫ: КРИПТОГРАФИЯ ================
-    // =================================================================
-
-    /**
-     * @param masterKey мастер-ключ пользователя
-     * @param salt уникальная соль пользователя (16+ байт, Base64-декодированная)
-     */
     private SecretKey deriveKeyWithSalt(String masterKey, byte[] salt) {
         Objects.requireNonNull(salt, "Salt cannot be null");
         if (salt.length < 16) throw new IllegalArgumentException("Salt must be at least 16 bytes");
@@ -215,25 +177,6 @@ public final class PasswordService {
         byte[] keyBytes = ((KeyParameter) gen.generateDerivedParameters(KEY_LENGTH_BITS)).getKey();
         return new SecretKeySpec(keyBytes, "AES");
     }
-
-
-    private SecretKey deriveKeyLegacy(String masterKey) {
-        byte[] salt = "password-manager-fixed-salt-v1".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        return deriveKeyWithSalt(masterKey, salt);
-    }
-
-
-    private String hashMasterKey(String masterKey) {
-        try {
-            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(masterKey.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            return Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
-        } catch (Exception e) {
-            log.error("Failed to hash master key", e);
-            throw new RuntimeException("Key hashing failed", e);
-        }
-    }
-
 
     private String encrypt(String plaintext, SecretKey key) throws Exception {
         if (plaintext == null) throw new IllegalArgumentException("Cannot encrypt null");
@@ -252,7 +195,6 @@ public final class PasswordService {
         return Base64.getEncoder().encodeToString(result);
     }
 
-
     private String decrypt(String encryptedData, SecretKey key) throws Exception {
         if (encryptedData == null || encryptedData.isEmpty()) {
             throw new IllegalArgumentException("Cannot decrypt empty value");
@@ -269,14 +211,9 @@ public final class PasswordService {
         Cipher cipher = Cipher.getInstance(ALGORITHM);
         cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_LENGTH * 8, iv));
 
-        byte[] plaintext = cipher.doFinal(ciphertext); 
+        byte[] plaintext = cipher.doFinal(ciphertext);
         return new String(plaintext, java.nio.charset.StandardCharsets.UTF_8);
     }
-
-    // =================================================================
-    // ============== ПРИВАТНЫЕ МЕТОДЫ: ВСПОМОГАТЕЛЬНЫЕ ================
-    // =================================================================
-
 
     private SecretKey getVaultKey(String sessionKey) {
         if (sessionKey == null || sessionKey.isBlank()) {
@@ -291,13 +228,11 @@ public final class PasswordService {
         return cached.getKey();
     }
 
-
     private void validateInput(String service, String login, String password) {
         if (service == null || service.isBlank()) throw new IllegalArgumentException("Service required");
         if (login == null || login.isBlank()) throw new IllegalArgumentException("Login required");
         if (password == null) throw new IllegalArgumentException("Password cannot be null");
     }
-
 
     private void validateMasterKey(String masterKey) {
         if (masterKey == null || masterKey.isBlank()) {
@@ -307,7 +242,6 @@ public final class PasswordService {
             throw new IllegalArgumentException("Master key must be at least 8 characters");
         }
     }
-
 
     private void cleanupExpiredKeys() {
         long now = System.currentTimeMillis();
@@ -328,12 +262,10 @@ public final class PasswordService {
         }
     }
 
-
     private String truncateHash(String hash) {
         if (hash == null || hash.length() <= 16) return hash;
         return hash.substring(0, 16) + "...";
     }
-
 
     @PreDestroy
     public void shutdown() {

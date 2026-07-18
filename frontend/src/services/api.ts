@@ -32,23 +32,41 @@ export const register = (username: string, password: string, masterKey: string) 
 export const login = (username: string, password: string) =>
   api.post<AuthResponse>('/auth/login', { username, password });
 
-// === ХРАНИЛИЩЕ (теперь требуют masterKey для деривации) ===
-export const getPasswords = (token: string, masterKey: string) =>
+// === РАЗБЛОКИРОВКА ХРАНИЛИЩА ===
+export const unlockVault = (token: string, masterKey: string) =>
+  api.post('/passwords/unlock', { masterKey }, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+
+// === ХРАНИЛИЩЕ ===
+export const getPasswords = (token: string) =>
   api.get<PasswordEntry[]>('/passwords', {
-    headers: { 'Authorization': `Bearer ${token}`, 'X-Master-Key': masterKey }
+    headers: { 
+      'Authorization': `Bearer ${token}`,
+      'X-Session-Key': token
+    }
   });
 
-export const addPassword = (token: string, masterKey: string, entry: Omit<PasswordEntry, 'id'>) =>
+export const addPassword = (token: string, entry: Omit<PasswordEntry, 'id'>) =>
   api.post('/passwords', entry, {
-    headers: { 'Authorization': `Bearer ${token}`, 'X-Master-Key': masterKey }
+    headers: { 
+      'Authorization': `Bearer ${token}`,
+      'X-Session-Key': token
+    }
   });
 
-export const updatePassword = (token: string, masterKey: string, service: string, entry: Omit<PasswordEntry, 'id'>) =>
+export const updatePassword = (token: string, service: string, entry: Omit<PasswordEntry, 'id'>) =>
   api.put(`/passwords/${service}`, entry, {
-    headers: { 'Authorization': `Bearer ${token}`, 'X-Master-Key': masterKey }
+    headers: { 
+      'Authorization': `Bearer ${token}`,
+      'X-Session-Key': token
+    }
   });
 
-export const deletePassword = (token: string, masterKey: string, service: string) =>
+export const deletePassword = (token: string, service: string) =>
   api.delete(`/passwords/${service}`, {
-    headers: { 'Authorization': `Bearer ${token}`, 'X-Master-Key': masterKey }
+    headers: { 
+      'Authorization': `Bearer ${token}`,
+      'X-Session-Key': token
+    }
   });
