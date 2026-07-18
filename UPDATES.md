@@ -1,33 +1,42 @@
-Password Manager 1.0:
-    - Stable working version with master-key access only
-    - No Edit/Delete account data icons
-    - There is no option to change the master-key, there is only a corresponding button
+# Changelog (История изменений)
 
-Password Manager 1.1:
-    - New Edit/Delete buttons and colors
-    - New hover effects for Edit/Delete buttons in index.css
+Все значимые изменения в проекте документируются в этом файле. Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/), но с несколько измененной структурой.
 
-Password Manager 1.2:
-    - Removed unused dependencies in backend/target/classes/application.properties
-    - Updated database location to match production environment.
-    - Updated repository methods to catch IOException and rethrow as RuntimeException in 
-      backend/src/main/java/com/example/passwordmanager/repository/JsonPasswordRepository.java
-    - Added logging for database path resolution and retrieval errors in
-      backend/src/main/java/com/example/passwordmanager/repository/JsonPasswordRepository.java
+---
 
-========================
+## [Unreleased]
+### В процессе (DevOps & Infrastructure)
+- Разработка Multi-stage Dockerfile для Backend и Frontend.
+- Настройка Docker Compose для локального развертывания всего стека (PostgreSQL + Backend + Frontend).
+- Подготовка к деплою на VPS (Ansible, k3s).
 
-Password Manager 2.0:
-    - Full web-app redesign
+---
 
-========================
+## [4.0] - 18.07.26
+### Миграция на реляционную СУБД (Главное изменение)
+- **Отказ от JSON:** Полностью удалено файловое хранение данных (`users.json`, `passwords.json`).
+- **Интеграция PostgreSQL 16:** Настроено подключение через Spring Data JPA и Hibernate.
+- **Целостность данных:** Реализованы внешние ключи и уникальные ограничения (один пользователь — одна запись на сервис).
+- **Решение проблем WSL2:** Настроен JDBC URL через `127.0.0.1:5433` для корректной работы в среде Windows Subsystem for Linux (избежание конфликтов IPv6).
 
-Password Manager 3.0:
-    - Updated UI: added Login module except of old master-key one
+### Конфигурация и DevOps (12-Factor App)
+- **Externalized Configuration:** Все секреты (пароли БД, JWT-ключи) вынесены в переменные окружения (`${VAR:default}`).
+- **Безопасность репозитория:** Настроены строгие `.gitignore` и `.dockerignore`. Артефакты сборки и зависимости исключены из Git.
+- **Документация:** Созданы профессиональные `README.md`, `SETUP.md` и `CHANGELOG.md`.
 
-Password Manager 3.1:
-    - Refactored backend structure to support password-based auth.
-    - Integrated JWT for secure session management.
-    - Updated UI: added dedicated Login and Sign-up modules.
-    - Enhanced user record update logic.
-    - Resolved multiple API communication bugs.
+###  Исправление критических багов
+- **Ошибка `AEADBadTagException`:** Исправлен рассинхрон между фронтендом и бэкендом при работе с криптографическими сессиями. Добавлен явный вызов эндпоинта `/api/passwords/unlock` после аутентификации.
+
+### Frontend и UX
+- **TypeScript:** Добавлена строгая типизация для всех DTO и API-запросов.
+- **Vue 3 Composition API:** Полностью переписан на современный синтаксис `<script setup>`.
+
+---
+
+## [X.X.X] - 21.04.26
+### Исходная архитектура
+*Автор оригинального репозитория [@ayecy](https://github.com/ayecy/password-manager) реализовал фундамент проекта:*
+- **Backend:** Spring Boot 3 (Java 21) с JWT-аутентификацией.
+- **Frontend:** Vue 3 с базовым UI.
+- **Безопасность:** Реализовано ядро шифрования (AES-256-GCM, PBKDF2, BCrypt).
+- **Хранение данных:** Локальные JSON-файлы (`users.json`, `passwords.json`).

@@ -165,3 +165,14 @@ override.tf.json
 
 # Ansible
 *.retry
+
+# JSON файлы с данными (старая версия)
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.node.json
+!vite.config.ts
+
+# Папка data
+backend/data/
